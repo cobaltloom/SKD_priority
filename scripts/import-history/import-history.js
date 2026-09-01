@@ -7,7 +7,13 @@
 //   node import-history.js --mode=summary --serviceAccount=./serviceAccountKey.json --file=./data/summary.csv
 //   node import-history.js --mode=daily   --serviceAccount=./serviceAccountKey.json --file=./data/daily-logs.csv --periods=./data/periods.json
 //
+//   # 全日分の行があり、出勤/欠勤/有給などのステータス列がある場合
+//   node import-history.js --mode=daily --serviceAccount=./serviceAccountKey.json \
+//     --file=./data/daily-logs.csv --periods=./data/periods.json \
+//     --statusColumn=status --workedStatuses=出勤,出張
+//
 // --dryRun を付けると、Firestoreへの書き込みは行わず内容の確認だけ行う。
+// 列名がCSVの実際のヘッダーと違う場合は --employeeColumn / --dateColumn / --statusColumn で指定できる。
 
 const fs = require("fs");
 const path = require("path");
@@ -126,15 +132,81 @@ async function runSummaryMode(db, args) {
   await writeRecords(db, records, args.dryRun);
 }
 
-// --mode=daily: 日次の勤怠ログ(出勤した日だけの行)から、年末年始期間ごとに
-// 「その期間に1日でも出勤していれば worked=true」を算出する。
-// 例: employeeCode,date (YYYY-MM-DD)
+// CSV行群から「employeeCode(小文字) -> fiscalYear -> { hasAnyRow, worked }」を組み立てる純粋関数。
+// Firestore に依存しないため単体テストしやすい。
+function computeDailyAttendance(rows, periods, codeMap, { employeeColumn, dateColumn, statusColumn, workedStatuses }) {
+  const unmatchedCodes = new Set();
+  const attendance = new Map();
+  for (const code of codeMap.keys()) {
+    attendance.set(
+      code,
+      new Map(Object.keys(periods).map((year) => [Number(year), { hasAnyRow: false, worked: false }]))
+    );
+  }
+
+  for (const row of rows) {
+    const rawCode = row[employeeColumn];
+    const code = String(rawCode || "").trim().toLowerCase();
+    if (!codeMap.has(code)) {
+      if (rawCode) unmatchedCodes.add(rawCode);
+      continue;
+    }
+    const date = row[dateColumn];
+    if (!date) continue;
+
+    for (const [yearStr, range] of Object.entries(periods)) {
+      if (date < range.start || date > range.end) continue;
+      const entry = attendance.get(code).get(Number(yearStr));
+      entry.hasAnyRow = true;
+      if (workedStatuses) {
+        if (workedStatuses.has(String(row[statusColumn] || "").trim())) {
+          entry.worked = true;
+        }
+      } else {
+        // ステータス列が無い場合、行の存在自体を「出勤した日」とみなす
+        entry.worked = true;
+      }
+    }
+  }
+
+  return { attendance, unmatchedCodes };
+}
+
+// --mode=daily: 日次の勤怠ログから、年末年始期間ごとに worked を算出する。
+//
+// ログが「出勤した日の行だけ」の場合(--statusColumn を指定しない):
+//   例: employeeCode,date (YYYY-MM-DD)
+//   対象期間に1日でも行があれば worked=true
+//
+// ログが「全日分の行があり、出勤/欠勤/有給などの区分がある」場合
+// (--statusColumn と --workedStatuses を指定):
+//   例: employeeCode,date,status
+//   対象期間内で status が --workedStatuses に含まれる行が1日でもあれば worked=true。
+//   （有給・欠勤など、workedStatuses に含めなかった区分の行しかない日は「休めた日」扱い）
+//
+// どちらの場合も、対象期間の行が1件も無い 社員×年度 は「データが無い」として
+// worked を書き込まずスキップする(未入社・退職・エクスポート漏れの可能性があるため、
+// 安易に worked=false と決め打ちしない)。
+//
 // periods.json 例: { "2023": { "start": "2022-12-29", "end": "2023-01-03" }, ... }
 async function runDailyMode(db, args) {
   const csvPath = args.file;
   const periodsPath = args.periods;
   if (!csvPath) throw new Error("--file=<daily-logs.csvのパス> を指定してください");
   if (!periodsPath) throw new Error("--periods=<periods.jsonのパス> を指定してください(年度ごとの期間定義)");
+
+  const employeeColumn = args.employeeColumn || "employeeCode";
+  const dateColumn = args.dateColumn || "date";
+  const statusColumn = args.statusColumn || null;
+  const workedStatuses = args.workedStatuses
+    ? new Set(String(args.workedStatuses).split(",").map((s) => s.trim()).filter(Boolean))
+    : null;
+
+  if (statusColumn && (!workedStatuses || workedStatuses.size === 0)) {
+    throw new Error(
+      "--statusColumn を指定した場合は、出勤扱いにするステータス値を --workedStatuses=出勤,出張 のようにカンマ区切りで指定してください"
+    );
+  }
 
   const rows = parse(fs.readFileSync(csvPath, "utf8"), {
     columns: true,
@@ -144,52 +216,52 @@ async function runDailyMode(db, args) {
   const periods = JSON.parse(fs.readFileSync(periodsPath, "utf8"));
 
   const codeMap = await loadEmployeeCodeMap(db);
-  const unmatched = new Set();
+  const { attendance, unmatchedCodes } = computeDailyAttendance(rows, periods, codeMap, {
+    employeeColumn,
+    dateColumn,
+    statusColumn,
+    workedStatuses,
+  });
 
-  // employeeCode(小文字) -> fiscalYear -> attended(true/false)
-  const attendance = new Map();
-  for (const code of codeMap.keys()) {
-    attendance.set(code, new Map(Object.keys(periods).map((year) => [Number(year), false])));
-  }
-
-  for (const row of rows) {
-    const code = String(row.employeeCode || "").trim().toLowerCase();
-    if (!codeMap.has(code)) {
-      unmatched.add(row.employeeCode);
-      continue;
-    }
-    const date = row.date;
-    for (const [yearStr, range] of Object.entries(periods)) {
-      if (date >= range.start && date <= range.end) {
-        attendance.get(code).set(Number(yearStr), true);
-      }
-    }
-  }
-
-  if (unmatched.size > 0) {
+  if (unmatchedCodes.size > 0) {
     console.warn(
-      `\n[警告] employees コレクションに見つからない employeeCode が${unmatched.size}件ありました(スキップ済み):`
+      `\n[警告] employees コレクションに見つからない ${employeeColumn} が${unmatchedCodes.size}件ありました(スキップ済み):`
     );
-    console.warn("  " + Array.from(unmatched).join(", "));
+    console.warn("  " + Array.from(unmatchedCodes).join(", "));
   }
 
   const records = [];
+  const missingCoverage = [];
   for (const [code, uid] of codeMap.entries()) {
     const yearMap = attendance.get(code);
-    for (const [fiscalYear, worked] of yearMap.entries()) {
+    for (const [fiscalYear, entry] of yearMap.entries()) {
+      if (!entry.hasAnyRow) {
+        missingCoverage.push(`${code}(${fiscalYear}年度)`);
+        continue;
+      }
       records.push({
         id: `${uid}_${fiscalYear}`,
         employeeId: uid,
         fiscalYear,
-        worked,
+        worked: entry.worked,
       });
     }
   }
 
-  console.log(
-    "\n[注意] このモードは「対象期間中に出勤ログが1件もない = その年は休暇を取得できた」とみなします。" +
-      "勤怠ログの取得漏れがあると誤った履歴になるため、書き込み前に --dryRun の出力を必ず確認してください。"
-  );
+  if (missingCoverage.length > 0) {
+    console.warn(
+      `\n[警告] 対象期間のログが1件も見つからない 社員×年度 が${missingCoverage.length}件あります` +
+        "(未入社・退職・エクスポート漏れの可能性。誤記録を避けるためこれらは書き込みをスキップします):"
+    );
+    console.warn("  " + missingCoverage.join(", "));
+  }
+
+  if (!statusColumn) {
+    console.log(
+      "\n[注意] ステータス列なしのため「対象期間中にログが無い = 休めた」とみなしています。" +
+        "書き込み前に --dryRun の出力を必ず確認してください。"
+    );
+  }
 
   await writeRecords(db, records, args.dryRun);
 }
@@ -222,7 +294,11 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((error) => {
-  console.error("\nエラー:", error.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error("\nエラー:", error.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { parseArgs, parseWorked, computeDailyAttendance };

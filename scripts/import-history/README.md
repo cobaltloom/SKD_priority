@@ -61,14 +61,6 @@ node import-history.js --mode=summary \
 
 ## モード2: 日次勤怠ログ (`--mode=daily`)
 
-CSVフォーマット(`examples/daily-logs-example.csv` 参照。**出勤した日の行だけ**でよい):
-
-```
-employeeCode,date
-e001,2022-12-30
-e001,2023-01-02
-```
-
 年度ごとの年末年始期間を別途 `periods.json` で定義する(`examples/periods-example.json` 参照):
 
 ```
@@ -78,7 +70,48 @@ e001,2023-01-02
 }
 ```
 
-実行例:
+### パターンA: 出勤/欠勤/有給などのステータス列がある場合(全日分の行がある)
+
+`examples/daily-logs-example.csv` 参照:
+
+```
+employeeCode,date,status
+e001,2022-12-29,出勤
+e001,2022-12-30,有給
+e002,2022-12-29,欠勤
+```
+
+`--statusColumn` でステータス列名を指定し、`--workedStatuses` に
+「出勤扱いにするステータス値」をカンマ区切りで列挙する(有給・欠勤など、
+ここに含めなかった値の行しかない期間は「休めた」扱いになる)。
+
+```
+node import-history.js --mode=daily \
+  --serviceAccount=./serviceAccountKey.json \
+  --file=./data/daily-logs.csv \
+  --periods=./data/periods.json \
+  --statusColumn=status \
+  --workedStatuses=出勤,出張 \
+  --dryRun
+
+# 内容を確認したら --dryRun を外して本実行
+```
+
+列名がこの例と違う場合(社内DB側のヘッダーが日本語など)は `--employeeColumn` /
+`--dateColumn` でも上書きできる。例: `--employeeColumn=社員コード --dateColumn=日付`
+
+対象期間に該当社員のログが1件も無い(未入社・退職・エクスポート漏れなど)場合は
+`worked` を書き込まず自動的にスキップし、警告として一覧表示する。
+
+### パターンB: 出勤した日の行だけがある場合(ステータス列なし)
+
+```
+employeeCode,date
+e001,2022-12-30
+e001,2023-01-02
+```
+
+`--statusColumn` を付けずに実行すると、行が存在する日=出勤した日とみなす。
 
 ```
 node import-history.js --mode=daily \
@@ -88,9 +121,10 @@ node import-history.js --mode=daily \
   --dryRun
 ```
 
-**注意**: このモードは「期間中に出勤ログが1件もない社員は休みを取得できた」とみなします。
+**注意**: パターンBは「期間中に出勤ログが1件もない社員は休みを取得できた」とみなします。
 勤怠ログの取得漏れ・エクスポート漏れがあると、実際には出勤していたのに休暇扱いに
-なってしまうため、`--dryRun` の結果を必ず目視確認してから本実行してください。
+なってしまうため、`--dryRun` の結果を必ず目視確認してから本実行してください
+(全日分のログが取れるなら、判定が安全なパターンAを推奨)。
 
 ## 実行後の確認
 
