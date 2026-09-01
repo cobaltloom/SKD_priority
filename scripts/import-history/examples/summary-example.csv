@@ -1,0 +1,7 @@
+employeeCode,fiscalYear,worked
+e001,2023,true
+e001,2024,false
+e002,2023,false
+e002,2024,true
+e003,2023,true
+e003,2024,true

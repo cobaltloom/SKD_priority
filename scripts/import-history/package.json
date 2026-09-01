@@ -1,0 +1,15 @@
+{
+  "name": "skd-priority-import-history",
+  "version": "1.0.0",
+  "private": true,
+  "description": "社内DBから書き出した過去の年末年始出勤データをFirestoreへ一括投入するスクリプト",
+  "main": "import-history.js",
+  "type": "commonjs",
+  "scripts": {
+    "import": "node import-history.js"
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "firebase-admin": "^12.6.0"
+  }
+}

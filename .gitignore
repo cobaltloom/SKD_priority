@@ -7,6 +7,10 @@ DerivedData/
 
 # Firebase secrets — each developer adds their own
 GoogleService-Info.plist
+serviceAccountKey.json
+
+# Node (scripts/import-history)
+node_modules/
 
 # macOS
 .DS_Store

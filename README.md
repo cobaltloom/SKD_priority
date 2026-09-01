@@ -11,6 +11,7 @@
 
 - `ios/SKDPriorityApp/` — SwiftUI製iOSアプリのソース一式
 - `firebase/firestore.rules` — Firestoreセキュリティルール
+- `scripts/import-history/` — 社内DBの過去出勤データをFirestoreへ一括投入するCLIツール
 - `docs/SETUP.md` — Mac/Xcode側でのセットアップ手順
 
 技術スタック: SwiftUI + Firebase (Authentication / Firestore)
