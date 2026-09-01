@@ -1,0 +1,43 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        get(/databases/$(database)/documents/employees/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /employees/{employeeId} {
+      allow read: if isSignedIn() && (request.auth.uid == employeeId || isAdmin());
+      allow write: if isAdmin();
+
+      match /workRecords/{year} {
+        allow read: if isSignedIn() && (request.auth.uid == employeeId || isAdmin());
+        // 実績の登録は管理者による期間確定処理(バッチ書き込み)でのみ行う
+        allow write: if isAdmin();
+      }
+    }
+
+    match /holidayPeriods/{periodId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+
+      match /requests/{requestId} {
+        allow read: if isSignedIn() && (request.auth.uid == requestId || isAdmin());
+
+        // 本人は自分のIDのドキュメントのみ、受付中の期間に限り作成・編集できる
+        allow create, update: if isSignedIn() &&
+          request.auth.uid == requestId &&
+          get(/databases/$(database)/documents/holidayPeriods/$(periodId)).data.status == 'open';
+
+        // 承認/却下など管理者による更新
+        allow update: if isAdmin();
+      }
+    }
+  }
+}

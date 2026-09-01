@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "holidayPeriods",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "fiscalYear", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

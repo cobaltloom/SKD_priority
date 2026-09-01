@@ -1,0 +1,12 @@
+# Xcode
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.build/
+*.xcworkspace/xcuserdata/
+
+# Firebase secrets — each developer adds their own
+GoogleService-Info.plist
+
+# macOS
+.DS_Store
